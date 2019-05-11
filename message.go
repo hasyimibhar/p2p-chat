@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	NonceSize = 12
+	NonceSize = 24
 )
 
 const (

@@ -159,7 +159,7 @@ func (p *Peer) initAEAD(nodePrivkey []byte, peerPubkey []byte) error {
 	p.pubkey = peerPubkey
 	p.secret = secret
 
-	p.aead, err = chacha20poly1305.New(p.secret)
+	p.aead, err = chacha20poly1305.NewX(p.secret)
 	if err != nil {
 		return err
 	}
