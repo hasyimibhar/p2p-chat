@@ -2,12 +2,18 @@ package main
 
 import (
 	"crypto/cipher"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
 	"net"
 
 	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/hkdf"
+)
+
+const (
+	SharedSecretSize = 32
 )
 
 type Peer struct {
@@ -151,13 +157,20 @@ func (p *Peer) ReceiveHandshake(peerPubkey []byte, nodePrivkey []byte, nodePubke
 }
 
 func (p *Peer) initAEAD(nodePrivkey []byte, peerPubkey []byte) error {
-	secret, err := ComputeSharedSecret(nodePrivkey, peerPubkey)
+	ephemeralSecret, err := ComputeSharedSecret(nodePrivkey, peerPubkey)
 	if err != nil {
 		return err
 	}
 
+	hash := sha256.New
+	hkdf := hkdf.New(hash, ephemeralSecret, nil, nil)
+
+	p.secret = make([]byte, SharedSecretSize)
+	if _, err := hkdf.Read(p.secret); err != nil {
+		return fmt.Errorf("failed to derive key")
+	}
+
 	p.pubkey = peerPubkey
-	p.secret = secret
 
 	p.aead, err = chacha20poly1305.NewX(p.secret)
 	if err != nil {

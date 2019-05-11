@@ -6,6 +6,7 @@ TODO:
 
 - [X] basic chat functionality
 - [X] cyptographic handshake using [ECDH](https://en.wikipedia.org/wiki/Elliptic-curve_Diffie%E2%80%93Hellman)
+- [X] generate shared key using HKDF
 - [ ] message passing using Encrypt-then-MAC AEAD
 - [ ] broadcast chat message
 - [ ] message routing through peers (using [Kademlia](https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf))
