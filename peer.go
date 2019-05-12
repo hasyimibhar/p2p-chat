@@ -3,11 +3,14 @@ package main
 import (
 	"crypto/cipher"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
-	"io"
 	"log"
 	"net"
+	"sync"
 
+	"github.com/hasyimibhar/p2p-chat/ed25519"
+	"github.com/hasyimibhar/p2p-chat/message"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 )
@@ -17,147 +20,108 @@ const (
 )
 
 type Peer struct {
-	conn    net.Conn
-	pubkey  []byte
-	secret  []byte
-	aead    cipher.AEAD
-	closed  bool
-	closeCh chan struct{}
+	node         *Node
+	conn         net.Conn
+	listenAddr   string
+	pubkey       []byte
+	secret       []byte
+	suite        cipher.AEAD
+	closed       bool
+	closeCh      chan struct{}
+	messageQueue sync.Map
 }
 
-func NewPeer(conn net.Conn) *Peer {
-	return &Peer{
+func NewPeer(node *Node, conn net.Conn) *Peer {
+	peer := &Peer{
+		node:    node,
 		conn:    conn,
 		closeCh: make(chan struct{}),
 	}
+
+	go peer.handleReceive()
+
+	return peer
+}
+
+func (p *Peer) Addr() string {
+	return p.conn.RemoteAddr().String()
+}
+
+func (p *Peer) ListenAddr() string {
+	return p.listenAddr
 }
 
 func (p *Peer) PublicKey() []byte {
 	return p.pubkey
 }
 
-func (p *Peer) Handle(node *Node) {
-	defer func() {
-		if !p.closed {
-			log.Printf("[info] lost connection with peer %s", p.conn.RemoteAddr().String())
-		}
-	}()
-
-	defer close(p.closeCh)
-
-	for {
-		msg, err := ReadMessage(p.conn)
-		if err != nil {
-			if !p.closed && err != io.EOF {
-				log.Println("[error] failed to read from peer", err)
-			}
-
-			return
-		}
-
-		if !p.Authenticated() && msg.Header.Opcode != OpcodeHandshake {
-			log.Println("[error] received message from unauthenticated peer")
-			return
-		}
-
-		switch msg.Header.Opcode {
-		case OpcodeHandshake:
-			if p.Authenticated() {
-				log.Println("[error] received handshake message from authenticated peer")
-				return
-			}
-
-			peerPubkey := msg.Body
-			if err := msg.Verify(peerPubkey); err != nil {
-				log.Println("[error]", err)
-				return
-			}
-
-			if err := p.ReceiveHandshake(peerPubkey, node.PrivateKey(), node.PublicKey()); err != nil {
-				log.Println("[error] failed to perform handshake with peer:", err)
-				return
-			}
-
-			log.Printf("[info] cryptographic handshake with peer %s successful", p.conn.RemoteAddr().String())
-
-		case OpcodeChat:
-			if err := msg.Verify(p.pubkey); err != nil {
-				log.Println("[error]", err)
-				return
-			}
-
-			if err := msg.Decrypt(p.aead); err != nil {
-				log.Println("[error]", err)
-				return
-			}
-
-			log.Printf("%s-> %s", p.conn.RemoteAddr().String(), string(msg.Body))
-		}
-	}
-}
-
-func (p *Peer) PerformHandshake(nodePrivkey []byte, nodePubkey []byte) error {
-	// Send pubkey to peer to start the handshake
-	request := &Message{
-		Header: MessageHeader{Opcode: OpcodeHandshake},
-		Body:   nodePubkey,
-	}
-
-	var err error
-
-	if err := request.Sign(nodePrivkey, nodePubkey); err != nil {
-		return err
-	}
-
-	if err := WriteMessage(p.conn, request); err != nil {
-		return err
-	}
-
-	response, err := ReadMessage(p.conn)
+func (p *Peer) SendMessage(msg message.Message) error {
+	encoded, err := message.Encode(msg, p.suite, p.node.PrivateKey(), p.node.PublicKey())
 	if err != nil {
 		return err
 	}
 
-	if response.Header.Opcode != OpcodeHandshake {
-		return fmt.Errorf("unexpected opcode: expecting handshake")
-	}
+	lenbuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenbuf, uint32(len(encoded)))
+	encoded = append(lenbuf, encoded...)
 
-	peerPubkey := response.Body
-	if err := response.Verify(peerPubkey); err != nil {
-		return err
-	}
-
-	if err := p.initAEAD(nodePrivkey, peerPubkey); err != nil {
+	_, err = p.conn.Write(encoded)
+	if err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (p *Peer) ReceiveHandshake(peerPubkey []byte, nodePrivkey []byte, nodePubkey []byte) error {
-	// Send node pubkey to peer to complete the handshake
-	request := &Message{
-		Header: MessageHeader{Opcode: OpcodeHandshake},
-		Body:   nodePubkey,
-	}
+func (p *Peer) ReceiveMessage(opcode message.Opcode) <-chan message.Message {
+	entry, _ := p.messageQueue.LoadOrStore(opcode, make(chan message.Message))
+	return entry.(chan message.Message)
+}
 
-	if err := request.Sign(nodePrivkey, nodePubkey); err != nil {
-		return err
-	}
+func (p *Peer) handleReceive() {
+	defer close(p.closeCh)
 
-	if err := WriteMessage(p.conn, request); err != nil {
-		return err
-	}
+	for {
+		lenbuf := make([]byte, 4)
+		_, err := p.conn.Read(lenbuf)
+		if err != nil {
+			log.Println("[error] failed to read from peer:", err)
+			return
+		}
 
-	if err := p.initAEAD(nodePrivkey, peerPubkey); err != nil {
+		msgbuf := make([]byte, binary.BigEndian.Uint32(lenbuf))
+		_, err = p.conn.Read(msgbuf)
+		if err != nil {
+			log.Println("[error] failed to read from peer:", err)
+			return
+		}
+
+		opcode, msg, err := message.Decode(msgbuf, p.suite, p.pubkey)
+		if err != nil {
+			log.Println("[error] failed to decode message:", err)
+			return
+		}
+
+		entry, _ := p.messageQueue.LoadOrStore(opcode, make(chan message.Message))
+		ch := entry.(chan message.Message)
+
+		ch <- msg
+	}
+}
+
+func (p *Peer) PerformHandshake(pubkey []byte, addr string) error {
+	p.pubkey = pubkey
+	p.listenAddr = addr
+
+	if err := p.initAEAD(); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (p *Peer) initAEAD(nodePrivkey []byte, peerPubkey []byte) error {
-	ephemeralSecret, err := ComputeSharedSecret(nodePrivkey, peerPubkey)
+func (p *Peer) initAEAD() error {
+	ephemeralSecret, err := ed25519.ComputeSharedSecret(p.node.PrivateKey(), p.pubkey)
 	if err != nil {
 		return err
 	}
@@ -170,41 +134,12 @@ func (p *Peer) initAEAD(nodePrivkey []byte, peerPubkey []byte) error {
 		return fmt.Errorf("failed to derive key")
 	}
 
-	p.pubkey = peerPubkey
-
-	p.aead, err = chacha20poly1305.NewX(p.secret)
+	p.suite, err = chacha20poly1305.NewX(p.secret)
 	if err != nil {
 		return err
 	}
 
 	return nil
-}
-
-func (p *Peer) SendChatMessage(node *Node, msg string) (err error) {
-	request := &Message{
-		Header: MessageHeader{Opcode: OpcodeChat},
-		Body:   []byte(msg),
-	}
-
-	if err = request.Encrypt(p.aead); err != nil {
-		err = fmt.Errorf("failed to encrypt message: %s", err)
-		return
-	}
-
-	if err = request.Sign(node.PrivateKey(), node.PublicKey()); err != nil {
-		err = fmt.Errorf("failed to sign message: %s", err)
-		return
-	}
-
-	if err = WriteMessage(p.conn, request); err != nil {
-		return
-	}
-
-	return
-}
-
-func (p *Peer) Authenticated() bool {
-	return p.secret != nil
 }
 
 func (p *Peer) Close() {

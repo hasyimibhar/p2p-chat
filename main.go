@@ -6,13 +6,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 )
 
 func main() {
 	var port = flag.Int("port", 8888, "Port to listen for peers")
-	var peers = flag.String("peers", "", "Peers to connect to")
+	var peer = flag.String("peer", "", "Peer to connect to")
 	flag.Parse()
 
 	node, err := NewNode(*port)
@@ -22,13 +21,9 @@ func main() {
 
 	go node.ListenForConnections()
 
-	if *peers != "" {
-		addresses := strings.Split(*peers, ",")
-
-		for _, addr := range addresses {
-			if err := node.ConnectToPeer(addr); err != nil {
-				log.Printf("[error] failed to connect to peer %s: %s", addr, err)
-			}
+	if *peer != "" {
+		if err := node.JoinPeer(*peer); err != nil {
+			log.Printf("[error] failed to join peer %s: %s", *peer, err)
 		}
 	}
 
@@ -36,7 +31,7 @@ func main() {
 		reader := bufio.NewReader(os.Stdin)
 		for {
 			msg, _ := reader.ReadString('\n')
-			if err := node.SendChatMessage(msg); err != nil {
+			if err := node.Chat(msg); err != nil {
 				log.Printf("[error] failed to send chat message: %s", err)
 			}
 		}
