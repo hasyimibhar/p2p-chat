@@ -26,6 +26,7 @@ type chatEntry struct {
 	Text      string
 }
 
+// Node represents the active peer.
 type Node struct {
 	pubkey  []byte
 	privkey []byte
@@ -93,6 +94,7 @@ func (n *Node) ListenForConnections() error {
 	}
 }
 
+// Chat broadcasts a public chat message to the network.
 func (n *Node) Chat(text string) error {
 	if n.Successor() == nil {
 		return fmt.Errorf("node has no successor")
@@ -115,6 +117,8 @@ func (n *Node) Chat(text string) error {
 	return nil
 }
 
+// StartPrivateChat initiates a private chat session with another peer.
+// This has to be done once for each pair of peers in the network.
 func (n *Node) StartPrivateChat(publicKey []byte) error {
 	if n.Successor() == nil {
 		return fmt.Errorf("node has no successor")
@@ -126,6 +130,10 @@ func (n *Node) StartPrivateChat(publicKey []byte) error {
 	})
 }
 
+// PrivateChat sends a private chat message.
+// The message will be routed around the network until it reaches
+// its receipient. The message is encrypted to prevent other
+// peers from reading the chat message.
 func (n *Node) PrivateChat(publicKey []byte, text string) error {
 	if n.Successor() == nil {
 		return fmt.Errorf("node has no successor")

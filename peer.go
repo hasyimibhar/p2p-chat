@@ -21,6 +21,7 @@ const (
 	SharedSecretSize = 32
 )
 
+// Peer represents another node in the network.
 type Peer struct {
 	node            *Node
 	conn            net.Conn
@@ -35,6 +36,7 @@ type Peer struct {
 	handshakeDoneCh chan struct{}
 }
 
+// NewPeer creates a peer.
 func NewPeer(node *Node, conn net.Conn) *Peer {
 	peer := &Peer{
 		node:            node,
@@ -73,6 +75,7 @@ func (p *Peer) CipherSuite() cipher.AEAD {
 	return p.suite
 }
 
+// SendMessage sends a message to the peer.
 func (p *Peer) SendMessage(msg message.Message) error {
 	encoded, err := message.Encode(msg, p.CipherSuite(), p.node.PrivateKey(), p.node.PublicKey())
 	if err != nil {
@@ -93,6 +96,8 @@ func (p *Peer) SendMessage(msg message.Message) error {
 	return nil
 }
 
+// ReceiveMessage returns a channel which outputs messages with
+// the specified opcode.
 func (p *Peer) ReceiveMessage(opcode message.Opcode) <-chan message.Message {
 	entry, _ := p.messageQueue.LoadOrStore(opcode, make(chan message.Message))
 	return entry.(chan message.Message)
@@ -149,6 +154,8 @@ func messageEncrypted(msgbuf []byte) bool {
 	return !bytes.Equal(nonce, []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
 }
 
+// PerformHandshake initializes the peer's AEAD cipher which
+// completes the cryptographic handshake.
 func (p *Peer) PerformHandshake(pubkey []byte, addr string) error {
 	p.mtx.Lock()
 	p.pubkey = pubkey
