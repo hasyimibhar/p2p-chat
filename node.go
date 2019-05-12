@@ -210,9 +210,9 @@ func (n *Node) performHandshake(peer *Peer) error {
 	n.mtx.Lock()
 	defer n.mtx.Unlock()
 
-	request := message.Handshake{
-		PublicKey: n.pubkey,
-		Addr:      n.Addr(),
+	request, err := message.NewHandshake(n.privkey, n.pubkey, n.Addr())
+	if err != nil {
+		return err
 	}
 
 	if err := peer.SendMessage(request); err != nil {
@@ -221,6 +221,10 @@ func (n *Node) performHandshake(peer *Peer) error {
 
 	msg := <-peer.ReceiveMessage(message.OpcodeHandshake)
 	handshake := msg.(message.Handshake)
+
+	if err := handshake.Verify(); err != nil {
+		return err
+	}
 
 	if err := peer.PerformHandshake(handshake.PublicKey, handshake.Addr); err != nil {
 		return err
