@@ -25,9 +25,13 @@ $ go test ./...
 - [X] message passing using Encrypt-then-MAC AEAD
 - maintain overlay structure:
    - [X] handle join
-   - [ ] handle leave
-   - [ ] handle failure
+   - [X] handle leave & failure
 - [X] broadcast chat message
 - [X] replicate chat log to new peer
 - [X] private message
 - [ ] tests
+
+## References:
+- [Chord: A Scalable Peer-to-peer Lookup Service for Internet
+Applications](http://nms.csail.mit.edu/papers/chord.pdf)
+- [How to Make Chord Correct](https://arxiv.org/pdf/1502.06461.pdf)
