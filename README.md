@@ -2,7 +2,22 @@
 
 This is a naive implementation of a p2p chat app for educational purposes.
 
-TODO:
+```sh
+# Run a network with 5 peers
+$ go run . -port=8000
+$ go run . -port=8001 -peer=localhost:8000
+$ go run . -port=8002 -peer=localhost:8000
+$ go run . -port=8003 -peer=localhost:8000
+$ go run . -port=8004 -peer=localhost:8000
+```
+
+## Tests
+
+```sh
+$ go test ./...
+```
+
+## TODO
 
 - [X] basic chat functionality
 - [X] cyptographic handshake using [ECDH](https://en.wikipedia.org/wiki/Elliptic-curve_Diffie%E2%80%93Hellman)
