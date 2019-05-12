@@ -133,6 +133,44 @@ func TestEncodeDecode(t *testing.T) {
 	}
 }
 
+func TestEncodeDecode_Notify(t *testing.T) {
+	a, A, _ := ed25519.GenerateKey()
+	b, B, _ := ed25519.GenerateKey()
+
+	secretA, _ := ed25519.ComputeSharedSecret(a, B)
+	secretB, _ := ed25519.ComputeSharedSecret(b, A)
+
+	suiteA := cipherSuite(t, secretA)
+	suiteB := cipherSuite(t, secretB)
+
+	notifyA := Notify{
+		Predecessor: "localhost:5432",
+	}
+
+	encoded, err := Encode(notifyA, suiteA, a, A)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opcode, msg, err := Decode(encoded, suiteB, B)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if opcode != OpcodeNotify {
+		t.Fatal("incorrect opcode")
+	}
+
+	notifyB, ok := msg.(Notify)
+	if !ok {
+		t.Fatal("incorrect message type")
+	}
+
+	if notifyA.Predecessor != notifyB.Predecessor {
+		t.Fatal("incorrect decoded message")
+	}
+}
+
 func cipherSuite(t *testing.T, ephemeralSecret []byte) cipher.AEAD {
 	hkdf := hkdf.New(sha256.New, ephemeralSecret, nil, nil)
 

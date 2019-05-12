@@ -60,7 +60,7 @@ func OpcodeFromMessage(msg Message) (Opcode, error) {
 //
 // - 1 byte: message opcode
 // - 24 bytes: message nonce (for AEAD)
-// - remaining bytes - 64 bytes: the message body
+// - remaining bytes: the message body
 //
 func Encode(msg Message, suite cipher.AEAD, privkey []byte, pubkey []byte) ([]byte, error) {
 	opcode, err := OpcodeFromMessage(msg)
@@ -94,8 +94,8 @@ func Encode(msg Message, suite cipher.AEAD, privkey []byte, pubkey []byte) ([]by
 // Decode decodes the byte slice into a message.
 func Decode(buf []byte, suite cipher.AEAD, pubkey []byte) (Opcode, Message, error) {
 	opcode := Opcode(buf[0])
-	nonce := buf[1:25]
-	encrypted := buf[25:]
+	nonce := buf[1 : 1+NonceSize]
+	encrypted := buf[1+NonceSize:]
 
 	var body []byte
 	var err error

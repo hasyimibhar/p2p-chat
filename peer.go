@@ -29,6 +29,7 @@ type Peer struct {
 	closed       bool
 	closeCh      chan struct{}
 	messageQueue sync.Map
+	mtx          sync.Mutex
 }
 
 func NewPeer(node *Node, conn net.Conn) *Peer {
@@ -48,15 +49,28 @@ func (p *Peer) Addr() string {
 }
 
 func (p *Peer) ListenAddr() string {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
 	return p.listenAddr
 }
 
 func (p *Peer) PublicKey() []byte {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
 	return p.pubkey
 }
 
+func (p *Peer) CipherSuite() cipher.AEAD {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
+	return p.suite
+}
+
 func (p *Peer) SendMessage(msg message.Message) error {
-	encoded, err := message.Encode(msg, p.suite, p.node.PrivateKey(), p.node.PublicKey())
+	encoded, err := message.Encode(msg, p.CipherSuite(), p.node.PrivateKey(), p.node.PublicKey())
 	if err != nil {
 		return err
 	}
@@ -65,7 +79,12 @@ func (p *Peer) SendMessage(msg message.Message) error {
 	binary.BigEndian.PutUint32(lenbuf, uint32(len(encoded)))
 	encoded = append(lenbuf, encoded...)
 
-	_, err = p.conn.Write(encoded)
+	// log.Println("[trace] sending:", hex.EncodeToString(encoded))
+
+	n, err := p.conn.Write(encoded)
+	if n != len(encoded) {
+		return fmt.Errorf("failed to write %d bytes, only %d bytes written", len(encoded), n)
+	}
 	if err != nil {
 		return err
 	}
@@ -83,20 +102,30 @@ func (p *Peer) handleReceive() {
 
 	for {
 		lenbuf := make([]byte, 4)
-		_, err := p.conn.Read(lenbuf)
+		n, err := p.conn.Read(lenbuf)
+		if n != len(lenbuf) {
+			log.Printf("[error] failed to write %d bytes, only %d bytes written", len(lenbuf), n)
+			return
+		}
 		if err != nil {
 			log.Println("[error] failed to read from peer:", err)
 			return
 		}
 
 		msgbuf := make([]byte, binary.BigEndian.Uint32(lenbuf))
-		_, err = p.conn.Read(msgbuf)
+		n, err = p.conn.Read(msgbuf)
+		if n != len(msgbuf) {
+			log.Printf("[error] failed to write %d bytes, only %d bytes written", len(msgbuf), n)
+			return
+		}
 		if err != nil {
 			log.Println("[error] failed to read from peer:", err)
 			return
 		}
 
-		opcode, msg, err := message.Decode(msgbuf, p.suite, p.pubkey)
+		// log.Println("[trace] received:", hex.EncodeToString(append(lenbuf, msgbuf...)))
+
+		opcode, msg, err := message.Decode(msgbuf, p.CipherSuite(), p.pubkey)
 		if err != nil {
 			log.Println("[error] failed to decode message:", err)
 			return
@@ -110,8 +139,10 @@ func (p *Peer) handleReceive() {
 }
 
 func (p *Peer) PerformHandshake(pubkey []byte, addr string) error {
+	p.mtx.Lock()
 	p.pubkey = pubkey
 	p.listenAddr = addr
+	p.mtx.Unlock()
 
 	if err := p.initAEAD(); err != nil {
 		return err
@@ -121,6 +152,9 @@ func (p *Peer) PerformHandshake(pubkey []byte, addr string) error {
 }
 
 func (p *Peer) initAEAD() error {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
 	ephemeralSecret, err := ed25519.ComputeSharedSecret(p.node.PrivateKey(), p.pubkey)
 	if err != nil {
 		return err

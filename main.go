@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"flag"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -19,6 +21,9 @@ func main() {
 		log.Println("[error] failed to start node:", err)
 	}
 
+	log.Printf("[info] initialized node with public key %s",
+		base64.StdEncoding.EncodeToString(node.PublicKey()))
+
 	go node.ListenForConnections()
 
 	if *peer != "" {
@@ -31,8 +36,47 @@ func main() {
 		reader := bufio.NewReader(os.Stdin)
 		for {
 			msg, _ := reader.ReadString('\n')
-			if err := node.Chat(msg); err != nil {
-				log.Printf("[error] failed to send chat message: %s", err)
+
+			if strings.HasPrefix(msg, "start_privatechat") {
+				tokens := strings.Split(msg, " ")
+				if len(tokens) != 2 {
+					log.Println("[error] usage: start_privatechat <public key>")
+					continue
+				}
+
+				pubkeyStr := tokens[1]
+
+				pubkey, err := base64.StdEncoding.DecodeString(pubkeyStr)
+				if err != nil {
+					log.Println("[error] start_privatechat:", err)
+				}
+
+				if err := node.StartPrivateChat(pubkey); err != nil {
+					log.Println("[error] failed to start private chat:", err)
+				}
+			} else if strings.HasPrefix(msg, "privatechat") {
+				tokens := strings.Split(msg, " ")
+				if len(tokens) < 3 {
+					log.Println("[error] usage: privatechat <public key> <text>")
+					continue
+				}
+
+				pubkeyStr := tokens[1]
+
+				pubkey, err := base64.StdEncoding.DecodeString(pubkeyStr)
+				if err != nil {
+					log.Println("[error] start_privatechat:", err)
+				}
+
+				text := strings.Join(tokens[2:], " ")
+
+				if err := node.PrivateChat(pubkey, text); err != nil {
+					log.Println("[error] failed to send private chat:", err)
+				}
+			} else {
+				if err := node.Chat(msg); err != nil {
+					log.Printf("[error] failed to send chat message: %s", err)
+				}
 			}
 		}
 	}()

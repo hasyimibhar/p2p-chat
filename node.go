@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/cipher"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -21,6 +23,7 @@ type Node struct {
 	mtx         sync.Mutex
 	successor   *Peer
 	predecessor string
+	suites      map[string]cipher.AEAD
 }
 
 // NewNode creates a new node.
@@ -35,6 +38,7 @@ func NewNode(port int) (*Node, error) {
 		privkey:     privkey,
 		port:        port,
 		predecessor: fmt.Sprintf("localhost:%d", port), // Set predecessor to self
+		suites:      map[string]cipher.AEAD{},
 	}, nil
 }
 
@@ -79,6 +83,35 @@ func (n *Node) Chat(text string) error {
 		PublicKey: n.pubkey,
 		Text:      text,
 	})
+}
+
+func (n *Node) StartPrivateChat(publicKey []byte) error {
+	if n.successor == nil {
+		return fmt.Errorf("node has no successor")
+	}
+
+	return n.successor.SendMessage(message.StartPrivateChatRequest{
+		PublicKey: publicKey,
+		Sender:    n.Addr(),
+	})
+}
+
+func (n *Node) PrivateChat(publicKey []byte, text string) error {
+	if n.successor == nil {
+		return fmt.Errorf("node has no successor")
+	}
+	suite, ok := n.suites[base64.StdEncoding.EncodeToString(publicKey)]
+	if !ok {
+		return fmt.Errorf("private chat has not been initialized with %s",
+			base64.StdEncoding.EncodeToString(publicKey))
+	}
+
+	msg, err := message.NewPrivateChat(n.pubkey, publicKey, text, suite)
+	if err != nil {
+		return fmt.Errorf("failed to create private chat message: %s", err)
+	}
+
+	return n.successor.SendMessage(msg)
 }
 
 func (n *Node) Close() {
@@ -156,7 +189,7 @@ func (n *Node) handleMessages(peer *Peer) {
 		select {
 		case msg := <-peer.ReceiveMessage(message.OpcodeChat):
 			chat := msg.(message.Chat)
-			log.Printf("%s-> %s", peer.ListenAddr(), chat.Text)
+			log.Printf("[%s] %s", base64.StdEncoding.EncodeToString(chat.PublicKey), chat.Text)
 
 			// If the node's successor is not the sender of the chat message,
 			// propagate the chat message to the successor, effectively
@@ -178,6 +211,73 @@ func (n *Node) handleMessages(peer *Peer) {
 				log.Println("[error] stabilize response failed:", err)
 			}
 
+		case msg := <-peer.ReceiveMessage(message.OpcodeStartPrivateChatRequest):
+			info := msg.(message.StartPrivateChatRequest)
+
+			if n.successor == nil {
+				log.Println("[error] node has no successor")
+			}
+
+			// If the node is not the recipient of the message, pass it to its successor
+			if !bytes.Equal(info.PublicKey, n.pubkey) {
+				if err := n.successor.SendMessage(info); err != nil {
+					log.Println("[error] propagate message failed:", err)
+				}
+			} else if info.Sender == n.Addr() {
+				log.Println("[error] recipient not found")
+			} else {
+				peer, err := n.connectToPeer(info.Sender)
+				if err != nil {
+					log.Println("[error] failed to connect to peer:", err)
+				}
+
+				n.suites[base64.StdEncoding.EncodeToString(peer.PublicKey())] = peer.CipherSuite()
+
+				log.Println("[info] initialized private message with",
+					base64.StdEncoding.EncodeToString(peer.PublicKey()))
+
+				if err := peer.SendMessage(message.StartPrivateChatResponse{}); err != nil {
+					log.Println("[error] failed to send message to peer:", err)
+				} else {
+					peer.Close()
+				}
+			}
+
+		case <-peer.ReceiveMessage(message.OpcodeStartPrivateChatResponse):
+			n.suites[base64.StdEncoding.EncodeToString(peer.PublicKey())] = peer.CipherSuite()
+			log.Println("[info] initialized private message with",
+				base64.StdEncoding.EncodeToString(peer.PublicKey()))
+
+			peer.Close()
+
+		case msg := <-peer.ReceiveMessage(message.OpcodePrivateChat):
+			chat := msg.(message.PrivateChat)
+
+			if n.successor == nil {
+				log.Println("[error] node has no successor")
+			}
+
+			// If the node is not the recipient of the message, pass it to its successor
+			if !bytes.Equal(chat.PublicKey, n.pubkey) {
+				if err := n.successor.SendMessage(chat); err != nil {
+					log.Println("[error] propagate message failed:", err)
+				}
+			} else if bytes.Equal(chat.Sender, n.pubkey) {
+				// The message has circled the whole network without finding
+				log.Println("[error] recipient not found")
+			} else {
+				suite, ok := n.suites[base64.StdEncoding.EncodeToString(chat.Sender)]
+				if !ok {
+					log.Println("[error] cipher suite not found for peer", base64.StdEncoding.EncodeToString(chat.PublicKey))
+				} else {
+					text, err := chat.Decrypt(suite)
+					if err != nil {
+						log.Println("[error] decrypt private chat failed:", err)
+					}
+
+					log.Printf("[(private) %s] %s", base64.StdEncoding.EncodeToString(chat.Sender), text)
+				}
+			}
 		}
 	}
 }

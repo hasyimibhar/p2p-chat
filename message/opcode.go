@@ -14,6 +14,9 @@ const (
 	OpcodeNotify
 	OpcodeStabilizeRequest
 	OpcodeStabilizeResponse
+	OpcodeStartPrivateChatRequest
+	OpcodeStartPrivateChatResponse
+	OpcodePrivateChat
 )
 
 var opcodes map[Opcode]Message
@@ -29,6 +32,9 @@ func init() {
 	registerMessage(OpcodeNotify, (*Notify)(nil))
 	registerMessage(OpcodeStabilizeRequest, (*StabilizeRequest)(nil))
 	registerMessage(OpcodeStabilizeResponse, (*StabilizeResponse)(nil))
+	registerMessage(OpcodeStartPrivateChatRequest, (*StartPrivateChatRequest)(nil))
+	registerMessage(OpcodeStartPrivateChatResponse, (*StartPrivateChatResponse)(nil))
+	registerMessage(OpcodePrivateChat, (*PrivateChat)(nil))
 }
 
 func registerMessage(o Opcode, m interface{}) Opcode {

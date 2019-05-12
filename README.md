@@ -28,5 +28,5 @@ $ go test ./...
    - [ ] handle leave
    - [ ] handle failure
 - [X] broadcast chat message
-- [ ] private message
+- [X] private message
 - [ ] tests
