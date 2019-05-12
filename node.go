@@ -419,9 +419,12 @@ func (n *Node) handleStabilize() {
 		go func() {
 			if err := n.stabilize(); err != nil {
 				log.Println("[error] stabilization failed:", err)
+				return
 			}
+
 			if err := n.beginUpdateSuccessorList(); err != nil {
 				log.Println("[error] populate successor list failed:", err)
+				return
 			}
 		}()
 	}
@@ -440,30 +443,12 @@ func (n *Node) stabilize() error {
 	}
 
 	if err := n.Successor().SendMessage(message.Ping{}); err != nil {
-		return err
+		return n.findNextSuccessor()
 	}
 
 	select {
-	case <-time.After(time.Second * 5):
-		log.Printf("[warn] unable to contact peer %s, finding new successor from successor list", n.Successor().ListenAddr())
-		n.Successor().Close()
-
-		n.mtx.Lock()
-		successors := make([]string, len(n.successors))
-		copy(successors, n.successors)
-		n.mtx.Unlock()
-
-		for _, addr := range successors {
-			if addr == "" {
-				continue
-			}
-
-			if err := n.JoinPeer(addr); err == nil {
-				// Found new successor
-				log.Println("[info] found new successor:", addr)
-				break
-			}
-		}
+	case <-time.After(time.Second * 1):
+		return n.findNextSuccessor()
 
 	case <-n.Successor().ReceiveMessage(message.OpcodePing):
 	}
@@ -544,4 +529,34 @@ func (n *Node) updateSuccessorList(msg message.SuccessorResponse) {
 	defer n.mtx.Unlock()
 
 	n.successors[msg.Count] = msg.Successor
+}
+
+func (n *Node) findNextSuccessor() error {
+	log.Printf("[warn] unable to contact peer %s, finding new successor from successor list", n.Successor().ListenAddr())
+	n.Successor().Close()
+
+	n.mtx.Lock()
+	successors := make([]string, len(n.successors))
+	copy(successors, n.successors)
+	n.mtx.Unlock()
+
+	found := false
+	for _, addr := range successors {
+		if addr == "" {
+			continue
+		}
+
+		if err := n.JoinPeer(addr); err == nil {
+			// Found new successor
+			found = true
+			log.Println("[info] found new successor:", addr)
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("failed to find successor")
+	}
+
+	return nil
 }
