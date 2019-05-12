@@ -5,19 +5,19 @@ import (
 	"crypto/rand"
 	"fmt"
 	"reflect"
-
-	"github.com/hasyimibhar/p2p-chat/ed25519"
 )
 
 const (
 	NonceSize = 24
 )
 
+// Message is the interface that any message must implement.
 type Message interface {
 	Encode() ([]byte, error)
 	Decode([]byte) (Message, error)
 }
 
+// MessageFromOpcode returns the message type associated to the opcode.
 func MessageFromOpcode(opcode Opcode) (Message, error) {
 	mtx.Lock()
 	defer mtx.Unlock()
@@ -35,6 +35,7 @@ func MessageFromOpcode(opcode Opcode) (Message, error) {
 	return message, nil
 }
 
+// OpcodeFromMessage returns the opcode associated to the message type.
 func OpcodeFromMessage(msg Message) (Opcode, error) {
 	mtx.Lock()
 	defer mtx.Unlock()
@@ -60,7 +61,6 @@ func OpcodeFromMessage(msg Message) (Opcode, error) {
 // - 1 byte: message opcode
 // - 24 bytes: message nonce (for AEAD)
 // - remaining bytes - 64 bytes: the message body
-// - 64 bytes: message signature
 //
 func Encode(msg Message, suite cipher.AEAD, privkey []byte, pubkey []byte) ([]byte, error) {
 	opcode, err := OpcodeFromMessage(msg)
@@ -88,27 +88,14 @@ func Encode(msg Message, suite cipher.AEAD, privkey []byte, pubkey []byte) ([]by
 	copy(encoded[1:], nonce)
 	copy(encoded[1+NonceSize:], msgbuf)
 
-	// Sign the message
-	signature, err := ed25519.Sign(privkey, pubkey, encoded)
-	if err != nil {
-		return nil, err
-	}
-
-	// Append signature
-	return append(encoded, signature...), nil
+	return encoded, nil
 }
 
+// Decode decodes the byte slice into a message.
 func Decode(buf []byte, suite cipher.AEAD, pubkey []byte) (Opcode, Message, error) {
 	opcode := Opcode(buf[0])
 	nonce := buf[1:25]
-	encrypted := buf[25 : len(buf)-64]
-	// sig := buf[len(buf)-64:]
-
-	// Verify message signature
-	// payload := buf[:len(buf)-64]
-	// if err := ed25519.Verify(pubkey, payload, sig); err != nil {
-	// 	return OpcodeNull, nil, err
-	// }
+	encrypted := buf[25:]
 
 	var body []byte
 	var err error
