@@ -17,6 +17,8 @@ const (
 	OpcodeStartPrivateChatRequest
 	OpcodeStartPrivateChatResponse
 	OpcodePrivateChat
+	OpcodeChatLogRequest
+	OpcodeChatLog
 )
 
 var opcodes map[Opcode]Message
@@ -35,6 +37,8 @@ func init() {
 	registerMessage(OpcodeStartPrivateChatRequest, (*StartPrivateChatRequest)(nil))
 	registerMessage(OpcodeStartPrivateChatResponse, (*StartPrivateChatResponse)(nil))
 	registerMessage(OpcodePrivateChat, (*PrivateChat)(nil))
+	registerMessage(OpcodeChatLogRequest, (*ChatLogRequest)(nil))
+	registerMessage(OpcodeChatLog, (*ChatLog)(nil))
 }
 
 func registerMessage(o Opcode, m interface{}) Opcode {

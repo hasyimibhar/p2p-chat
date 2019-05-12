@@ -14,6 +14,11 @@ import (
 	"github.com/hasyimibhar/p2p-chat/message"
 )
 
+type chatEntry struct {
+	PublicKey []byte
+	Text      string
+}
+
 type Node struct {
 	pubkey  []byte
 	privkey []byte
@@ -24,6 +29,7 @@ type Node struct {
 	successor   *Peer
 	predecessor string
 	suites      map[string]cipher.AEAD
+	chatLog     []chatEntry
 }
 
 // NewNode creates a new node.
@@ -39,6 +45,7 @@ func NewNode(port int) (*Node, error) {
 		port:        port,
 		predecessor: fmt.Sprintf("localhost:%d", port), // Set predecessor to self
 		suites:      map[string]cipher.AEAD{},
+		chatLog:     []chatEntry{},
 	}, nil
 }
 
@@ -79,10 +86,21 @@ func (n *Node) Chat(text string) error {
 		return fmt.Errorf("node has no successor")
 	}
 
-	return n.successor.SendMessage(message.Chat{
+	if err := n.successor.SendMessage(message.Chat{
 		PublicKey: n.pubkey,
 		Text:      text,
+	}); err != nil {
+		return err
+	}
+
+	n.mtx.Lock()
+	n.chatLog = append(n.chatLog, chatEntry{
+		Text:      text,
+		PublicKey: n.pubkey,
 	})
+	n.mtx.Unlock()
+
+	return nil
 }
 
 func (n *Node) StartPrivateChat(publicKey []byte) error {
@@ -142,6 +160,8 @@ func (n *Node) connectToPeer(address string) (*Peer, error) {
 	return peer, nil
 }
 
+// JoinPeer makes the node to join the peer network
+// and set the peer at the specified address as its successor.
 func (n *Node) JoinPeer(address string) error {
 	peer, err := n.connectToPeer(address)
 	if err != nil {
@@ -149,6 +169,10 @@ func (n *Node) JoinPeer(address string) error {
 	}
 
 	if err := n.notify(peer); err != nil {
+		return err
+	}
+
+	if err := peer.SendMessage(message.ChatLogRequest{}); err != nil {
 		return err
 	}
 
@@ -189,6 +213,14 @@ func (n *Node) handleMessages(peer *Peer) {
 		select {
 		case msg := <-peer.ReceiveMessage(message.OpcodeChat):
 			chat := msg.(message.Chat)
+
+			n.mtx.Lock()
+			n.chatLog = append(n.chatLog, chatEntry{
+				Text:      chat.Text,
+				PublicKey: chat.PublicKey,
+			})
+			n.mtx.Unlock()
+
 			log.Printf("[%s] %s", base64.StdEncoding.EncodeToString(chat.PublicKey), chat.Text)
 
 			// If the node's successor is not the sender of the chat message,
@@ -199,6 +231,44 @@ func (n *Node) handleMessages(peer *Peer) {
 					log.Println("[error] propagate chat failed:", err)
 				}
 			}
+
+		case <-peer.ReceiveMessage(message.OpcodeChatLogRequest):
+			msg := message.ChatLog{
+				Entries: []message.Chat{},
+			}
+
+			n.mtx.Lock()
+			for _, e := range n.chatLog {
+				msg.Entries = append(msg.Entries, message.Chat{
+					PublicKey: e.PublicKey,
+					Text:      e.Text,
+				})
+
+				log.Printf("[%s] %s", base64.StdEncoding.EncodeToString(e.PublicKey), e.Text)
+			}
+
+			n.mtx.Unlock()
+
+			if err := peer.SendMessage(msg); err != nil {
+				log.Println("[error] chat log response failed:", err)
+			}
+
+		case msg := <-peer.ReceiveMessage(message.OpcodeChatLog):
+			log := msg.(message.ChatLog)
+
+			// TODO: Implement conflict resolution instead of
+			// replacing the chat log
+			n.mtx.Lock()
+			n.chatLog = []chatEntry{}
+
+			for _, e := range log.Entries {
+				n.chatLog = append(n.chatLog, chatEntry{
+					PublicKey: e.PublicKey,
+					Text:      e.Text,
+				})
+			}
+
+			n.mtx.Unlock()
 
 		case msg := <-peer.ReceiveMessage(message.OpcodeNotify):
 			n.rectify(peer, msg.(message.Notify))

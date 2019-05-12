@@ -3,6 +3,7 @@ package message
 import (
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/binary"
 )
 
 type Chat struct {
@@ -16,6 +17,62 @@ func (m Chat) Encode() ([]byte, error) {
 
 func (m Chat) Decode(buf []byte) (Message, error) {
 	return Chat{PublicKey: buf[:32], Text: string(buf[32:])}, nil
+}
+
+// ChatLogRequest asks a peer for its chat log.
+type ChatLogRequest struct{}
+
+func (m ChatLogRequest) Encode() ([]byte, error) {
+	return []byte{}, nil
+}
+
+func (m ChatLogRequest) Decode(buf []byte) (Message, error) {
+	return ChatLogRequest{}, nil
+}
+
+// ChatLog contains the public chat log. It's used for replicating
+// the public chat log among all peers.
+type ChatLog struct {
+	Entries []Chat
+}
+
+func (m ChatLog) Encode() ([]byte, error) {
+	encoded := make([]byte, 2)
+	binary.BigEndian.PutUint16(encoded, uint16(len(m.Entries)))
+
+	for _, c := range m.Entries {
+		buflen := make([]byte, 4)
+		ce, _ := c.Encode()
+
+		binary.BigEndian.PutUint32(buflen, uint32(len(ce)))
+		encoded = append(encoded, append(buflen, ce...)...)
+	}
+
+	return encoded, nil
+}
+
+func (m ChatLog) Decode(buf []byte) (Message, error) {
+	decoded := ChatLog{
+		Entries: []Chat{},
+	}
+
+	entriesLength := binary.BigEndian.Uint16(buf)
+	buf = buf[2:]
+
+	for i := uint16(0); i < entriesLength; i++ {
+		buflen := binary.BigEndian.Uint32(buf)
+		buf = buf[4:]
+
+		entry, err := Chat{}.Decode(buf[:buflen])
+		if err != nil {
+			return nil, err
+		}
+
+		decoded.Entries = append(decoded.Entries, entry.(Chat))
+		buf = buf[buflen:]
+	}
+
+	return decoded, nil
 }
 
 // StartPrivateChatRequest informs the peer with the specified public key

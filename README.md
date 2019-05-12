@@ -28,5 +28,6 @@ $ go test ./...
    - [ ] handle leave
    - [ ] handle failure
 - [X] broadcast chat message
+- [X] replicate chat log to new peer
 - [X] private message
 - [ ] tests
