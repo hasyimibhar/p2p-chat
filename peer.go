@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
@@ -21,23 +22,25 @@ const (
 )
 
 type Peer struct {
-	node         *Node
-	conn         net.Conn
-	listenAddr   string
-	pubkey       []byte
-	secret       []byte
-	suite        cipher.AEAD
-	closed       bool
-	closeCh      chan struct{}
-	messageQueue sync.Map
-	mtx          sync.Mutex
+	node            *Node
+	conn            net.Conn
+	listenAddr      string
+	pubkey          []byte
+	secret          []byte
+	suite           cipher.AEAD
+	closed          bool
+	closeCh         chan struct{}
+	messageQueue    sync.Map
+	mtx             sync.Mutex
+	handshakeDoneCh chan struct{}
 }
 
 func NewPeer(node *Node, conn net.Conn) *Peer {
 	peer := &Peer{
-		node:    node,
-		conn:    conn,
-		closeCh: make(chan struct{}),
+		node:            node,
+		conn:            conn,
+		closeCh:         make(chan struct{}),
+		handshakeDoneCh: make(chan struct{}),
 	}
 
 	go peer.handleReceive()
@@ -124,7 +127,14 @@ func (p *Peer) handleReceive() {
 
 		// log.Println("[trace] received:", hex.EncodeToString(append(lenbuf, msgbuf...)))
 
-		opcode, msg, err := message.Decode(msgbuf, p.CipherSuite(), p.pubkey)
+		// TODO: there should be a better way to do this.
+		// If nonce is non-zero, the message is encrypted, so decoding can only
+		// be done after cryptographic handshake is complete.
+		if messageEncrypted(msgbuf) {
+			<-p.handshakeDoneCh
+		}
+
+		opcode, msg, err := message.Decode(msgbuf, p.CipherSuite(), p.PublicKey())
 		if err != nil {
 			log.Println("[error] failed to decode message:", err)
 			return
@@ -137,6 +147,11 @@ func (p *Peer) handleReceive() {
 	}
 }
 
+func messageEncrypted(msgbuf []byte) bool {
+	nonce := msgbuf[:message.NonceSize]
+	return !bytes.Equal(nonce, []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+}
+
 func (p *Peer) PerformHandshake(pubkey []byte, addr string) error {
 	p.mtx.Lock()
 	p.pubkey = pubkey
@@ -146,6 +161,8 @@ func (p *Peer) PerformHandshake(pubkey []byte, addr string) error {
 	if err := p.initAEAD(); err != nil {
 		return err
 	}
+
+	close(p.handshakeDoneCh)
 
 	return nil
 }
@@ -176,6 +193,9 @@ func (p *Peer) initAEAD() error {
 }
 
 func (p *Peer) Close() {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
 	p.closed = true
 	p.conn.Close()
 	<-p.closeCh

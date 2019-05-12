@@ -14,6 +14,13 @@ import (
 	"github.com/hasyimibhar/p2p-chat/message"
 )
 
+const (
+	// SuccessorListSize is the number of successors each
+	// node keeps in its successor list (not including its
+	// immediate successor).
+	SuccessorListSize = 2
+)
+
 type chatEntry struct {
 	PublicKey []byte
 	Text      string
@@ -27,6 +34,7 @@ type Node struct {
 	ln          net.Listener
 	mtx         sync.Mutex
 	successor   *Peer
+	successors  []string
 	predecessor string
 	suites      map[string]cipher.AEAD
 	chatLog     []chatEntry
@@ -43,6 +51,7 @@ func NewNode(port int) (*Node, error) {
 		pubkey:      pubkey,
 		privkey:     privkey,
 		port:        port,
+		successors:  make([]string, SuccessorListSize),
 		predecessor: fmt.Sprintf("localhost:%d", port), // Set predecessor to self
 		suites:      map[string]cipher.AEAD{},
 		chatLog:     []chatEntry{},
@@ -61,7 +70,10 @@ func (n *Node) ListenForConnections() error {
 	}
 
 	log.Println("[info] listenting for peers on", ln.Addr().String())
+
+	n.mtx.Lock()
 	n.ln = ln
+	n.mtx.Unlock()
 
 	defer ln.Close()
 	for {
@@ -70,7 +82,7 @@ func (n *Node) ListenForConnections() error {
 			return err
 		}
 
-		log.Printf("[info] peer connected at %s", conn.RemoteAddr().String())
+		// log.Printf("[trace] peer connected at %s", conn.RemoteAddr().String())
 
 		peer := NewPeer(n, conn)
 		if err := n.performHandshake(peer); err != nil {
@@ -82,11 +94,11 @@ func (n *Node) ListenForConnections() error {
 }
 
 func (n *Node) Chat(text string) error {
-	if n.successor == nil {
+	if n.Successor() == nil {
 		return fmt.Errorf("node has no successor")
 	}
 
-	if err := n.successor.SendMessage(message.Chat{
+	if err := n.Successor().SendMessage(message.Chat{
 		PublicKey: n.pubkey,
 		Text:      text,
 	}); err != nil {
@@ -104,18 +116,18 @@ func (n *Node) Chat(text string) error {
 }
 
 func (n *Node) StartPrivateChat(publicKey []byte) error {
-	if n.successor == nil {
+	if n.Successor() == nil {
 		return fmt.Errorf("node has no successor")
 	}
 
-	return n.successor.SendMessage(message.StartPrivateChatRequest{
+	return n.Successor().SendMessage(message.StartPrivateChatRequest{
 		PublicKey: publicKey,
 		Sender:    n.Addr(),
 	})
 }
 
 func (n *Node) PrivateChat(publicKey []byte, text string) error {
-	if n.successor == nil {
+	if n.Successor() == nil {
 		return fmt.Errorf("node has no successor")
 	}
 	suite, ok := n.suites[base64.StdEncoding.EncodeToString(publicKey)]
@@ -129,7 +141,7 @@ func (n *Node) PrivateChat(publicKey []byte, text string) error {
 		return fmt.Errorf("failed to create private chat message: %s", err)
 	}
 
-	return n.successor.SendMessage(msg)
+	return n.Successor().SendMessage(msg)
 }
 
 func (n *Node) Close() {
@@ -143,7 +155,7 @@ func (n *Node) Close() {
 
 // connectToPeer connects to a peer and perform cryptographic handshake.
 func (n *Node) connectToPeer(address string) (*Peer, error) {
-	log.Println("[info] connecting to peer", address)
+	// log.Println("[trace] connecting to peer", address)
 
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
@@ -172,11 +184,18 @@ func (n *Node) JoinPeer(address string) error {
 		return err
 	}
 
-	if err := peer.SendMessage(message.ChatLogRequest{}); err != nil {
-		return err
+	n.mtx.Lock()
+	chatLogEmpty := len(n.chatLog) == 0
+	n.mtx.Unlock()
+
+	// Request chat log from peer if it's chat log is empty
+	if chatLogEmpty {
+		if err := peer.SendMessage(message.ChatLogRequest{}); err != nil {
+			return err
+		}
 	}
 
-	if n.successor == nil {
+	if n.Successor() == nil {
 		go n.handleStabilize()
 	}
 
@@ -188,6 +207,9 @@ func (n *Node) JoinPeer(address string) error {
 }
 
 func (n *Node) performHandshake(peer *Peer) error {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+
 	request := message.Handshake{
 		PublicKey: n.pubkey,
 		Addr:      n.Addr(),
@@ -204,7 +226,7 @@ func (n *Node) performHandshake(peer *Peer) error {
 		return err
 	}
 
-	log.Printf("[info] cryptographic handshake with peer %s successful", peer.Addr())
+	// log.Printf("[trace] cryptographic handshake with peer %s successful", peer.Addr())
 	return nil
 }
 
@@ -226,8 +248,8 @@ func (n *Node) handleMessages(peer *Peer) {
 			// If the node's successor is not the sender of the chat message,
 			// propagate the chat message to the successor, effectively
 			// broadcasting the chat message.
-			if n.successor != nil && !bytes.Equal(chat.PublicKey, n.successor.PublicKey()) {
-				if err := n.successor.SendMessage(chat); err != nil {
+			if n.Successor() != nil && !bytes.Equal(chat.PublicKey, n.Successor().PublicKey()) {
+				if err := n.Successor().SendMessage(chat); err != nil {
 					log.Println("[error] propagate chat failed:", err)
 				}
 			}
@@ -274,23 +296,25 @@ func (n *Node) handleMessages(peer *Peer) {
 			n.rectify(peer, msg.(message.Notify))
 
 		case <-peer.ReceiveMessage(message.OpcodeStabilizeRequest):
+			n.mtx.Lock()
 			err := peer.SendMessage(message.StabilizeResponse{
 				Predecessor: n.predecessor,
 			})
 			if err != nil {
 				log.Println("[error] stabilize response failed:", err)
 			}
+			n.mtx.Unlock()
 
 		case msg := <-peer.ReceiveMessage(message.OpcodeStartPrivateChatRequest):
 			info := msg.(message.StartPrivateChatRequest)
 
-			if n.successor == nil {
+			if n.Successor() == nil {
 				log.Println("[error] node has no successor")
 			}
 
 			// If the node is not the recipient of the message, pass it to its successor
 			if !bytes.Equal(info.PublicKey, n.pubkey) {
-				if err := n.successor.SendMessage(info); err != nil {
+				if err := n.Successor().SendMessage(info); err != nil {
 					log.Println("[error] propagate message failed:", err)
 				}
 			} else if info.Sender == n.Addr() {
@@ -323,13 +347,13 @@ func (n *Node) handleMessages(peer *Peer) {
 		case msg := <-peer.ReceiveMessage(message.OpcodePrivateChat):
 			chat := msg.(message.PrivateChat)
 
-			if n.successor == nil {
+			if n.Successor() == nil {
 				log.Println("[error] node has no successor")
 			}
 
 			// If the node is not the recipient of the message, pass it to its successor
 			if !bytes.Equal(chat.PublicKey, n.pubkey) {
-				if err := n.successor.SendMessage(chat); err != nil {
+				if err := n.Successor().SendMessage(chat); err != nil {
 					log.Println("[error] propagate message failed:", err)
 				}
 			} else if bytes.Equal(chat.Sender, n.pubkey) {
@@ -348,6 +372,19 @@ func (n *Node) handleMessages(peer *Peer) {
 					log.Printf("[(private) %s] %s", base64.StdEncoding.EncodeToString(chat.Sender), text)
 				}
 			}
+
+		case msg := <-peer.ReceiveMessage(message.OpcodeSuccessorRequest):
+			if err := n.handleMessageSuccessorRequest(msg.(message.SuccessorRequest)); err != nil {
+				log.Println("[error] propagate message failed:", err)
+			}
+
+		case msg := <-peer.ReceiveMessage(message.OpcodeSuccessorResponse):
+			n.updateSuccessorList(msg.(message.SuccessorResponse))
+
+		case msg := <-peer.ReceiveMessage(message.OpcodePing):
+			if err := peer.SendMessage(msg); err != nil {
+				log.Println("[error] ping failed:", err)
+			}
 		}
 	}
 }
@@ -359,7 +396,7 @@ func (n *Node) notify(peer *Peer) error {
 }
 
 func (n *Node) rectify(peer *Peer, msg message.Notify) {
-	log.Printf("[trace] updating predecessor to %s", msg.Predecessor)
+	// log.Printf("[trace] updating predecessor to %s", msg.Predecessor)
 
 	n.mtx.Lock()
 	n.predecessor = msg.Predecessor
@@ -368,8 +405,8 @@ func (n *Node) rectify(peer *Peer, msg message.Notify) {
 	// If a node has no successor, it means the node
 	// is the initial node. If so, set the peer as its
 	// successor and start the stabilization goroutine.
-	if n.successor == nil {
-		log.Printf("[trace] updating successor to %s", peer.ListenAddr())
+	if n.Successor() == nil {
+		// log.Printf("[trace] updating successor to %s", peer.ListenAddr())
 		if err := n.JoinPeer(peer.ListenAddr()); err != nil {
 			log.Println("[error]", err)
 		}
@@ -383,36 +420,128 @@ func (n *Node) handleStabilize() {
 			if err := n.stabilize(); err != nil {
 				log.Println("[error] stabilization failed:", err)
 			}
+			if err := n.beginUpdateSuccessorList(); err != nil {
+				log.Println("[error] populate successor list failed:", err)
+			}
 		}()
 	}
 }
 
+func (n *Node) Successor() *Peer {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+
+	return n.successor
+}
+
 func (n *Node) stabilize() error {
-	if n.successor == nil {
+	if n.Successor() == nil {
 		return fmt.Errorf("node has no successor")
 	}
 
-	// log.Printf("[trace] running periodic stabilize routine (successor=%s, predecessor=%s)",
-	// 	n.successor.ListenAddr(), n.predecessor)
-
-	if err := n.successor.SendMessage(message.StabilizeRequest{}); err != nil {
+	if err := n.Successor().SendMessage(message.Ping{}); err != nil {
 		return err
 	}
 
-	msg := <-n.successor.ReceiveMessage(message.OpcodeStabilizeResponse)
+	select {
+	case <-time.After(time.Second * 5):
+		log.Printf("[warn] unable to contact peer %s, finding new successor from successor list", n.Successor().ListenAddr())
+		n.Successor().Close()
+
+		n.mtx.Lock()
+		successors := make([]string, len(n.successors))
+		copy(successors, n.successors)
+		n.mtx.Unlock()
+
+		for _, addr := range successors {
+			if addr == "" {
+				continue
+			}
+
+			if err := n.JoinPeer(addr); err == nil {
+				// Found new successor
+				log.Println("[info] found new successor:", addr)
+				break
+			}
+		}
+
+	case <-n.Successor().ReceiveMessage(message.OpcodePing):
+	}
+
+	// log.Printf("[trace] running periodic stabilize routine (successor=%s, predecessor=%s)",
+	// 	n.Successor().ListenAddr(), n.predecessor)
+
+	if err := n.Successor().SendMessage(message.StabilizeRequest{}); err != nil {
+		return err
+	}
+
+	msg := <-n.Successor().ReceiveMessage(message.OpcodeStabilizeResponse)
 	response := msg.(message.StabilizeResponse)
 
 	if response.Predecessor == n.Addr() {
 		return nil
 	}
 
-	log.Printf("[trace] updating successor to %s", response.Predecessor)
+	// log.Printf("[trace] updating successor to %s", response.Predecessor)
 
-	n.successor.Close()
+	n.Successor().Close()
 
 	if err := n.JoinPeer(response.Predecessor); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (n *Node) beginUpdateSuccessorList() error {
+	if n.Successor() == nil {
+		return fmt.Errorf("node has no successor")
+	}
+
+	return n.Successor().SendMessage(message.SuccessorRequest{
+		PublicKey: n.pubkey,
+		Count:     0,
+		Sender:    n.Addr(),
+	})
+}
+
+func (n *Node) handleMessageSuccessorRequest(msg message.SuccessorRequest) error {
+	if n.Successor() == nil {
+		return fmt.Errorf("node has no successor")
+	}
+
+	// Don't propagate if the message have circled the network
+	if bytes.Equal(n.Successor().PublicKey(), msg.PublicKey) {
+		return nil
+	}
+
+	peer, err := n.connectToPeer(msg.Sender)
+	if err != nil {
+		return err
+	}
+
+	defer peer.Close()
+
+	err = peer.SendMessage(message.SuccessorResponse{
+		Count:     msg.Count,
+		Successor: n.Successor().ListenAddr(),
+	})
+	if err != nil {
+		return nil
+	}
+
+	// Propagate the message to the next successor
+	msg.Count++
+	if msg.Count < SuccessorListSize {
+		return n.Successor().SendMessage(msg)
+	}
+
+	return nil
+}
+
+func (n *Node) updateSuccessorList(msg message.SuccessorResponse) {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+
+	n.successors[msg.Count] = msg.Successor
 }

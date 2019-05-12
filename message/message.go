@@ -73,6 +73,8 @@ func Encode(msg Message, suite cipher.AEAD, privkey []byte, pubkey []byte) ([]by
 		return nil, err
 	}
 
+	msgbuf = append([]byte{byte(opcode)}, msgbuf...)
+
 	// Generate nonce
 	nonce := make([]byte, NonceSize)
 	if suite != nil {
@@ -83,39 +85,38 @@ func Encode(msg Message, suite cipher.AEAD, privkey []byte, pubkey []byte) ([]by
 		msgbuf = suite.Seal(nil, nonce, msgbuf, nil)
 	}
 
-	encoded := make([]byte, len(msgbuf)+NonceSize+1)
-	encoded[0] = byte(opcode)
-	copy(encoded[1:], nonce)
-	copy(encoded[1+NonceSize:], msgbuf)
+	encoded := make([]byte, len(msgbuf)+NonceSize)
+	copy(encoded, nonce)
+	copy(encoded[NonceSize:], msgbuf)
 
 	return encoded, nil
 }
 
 // Decode decodes the byte slice into a message.
 func Decode(buf []byte, suite cipher.AEAD, pubkey []byte) (Opcode, Message, error) {
-	opcode := Opcode(buf[0])
-	nonce := buf[1 : 1+NonceSize]
-	encrypted := buf[1+NonceSize:]
+	nonce := buf[:NonceSize]
+	encrypted := buf[NonceSize:]
 
-	var body []byte
+	var msgbuf []byte
 	var err error
 
 	// Decrypt message body
 	if suite != nil {
-		body, err = suite.Open(nil, nonce, encrypted, nil)
+		msgbuf, err = suite.Open(nil, nonce, encrypted, nil)
 		if err != nil {
 			return OpcodeNull, nil, err
 		}
 	} else {
-		body = encrypted
+		msgbuf = encrypted
 	}
 
+	opcode := Opcode(msgbuf[0])
 	msg, err := MessageFromOpcode(opcode)
 	if err != nil {
 		return OpcodeNull, nil, err
 	}
 
-	msg, err = msg.Decode(body)
+	msg, err = msg.Decode(msgbuf[1:])
 	if err != nil {
 		return OpcodeNull, nil, err
 	}
