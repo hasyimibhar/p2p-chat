@@ -1,6 +1,8 @@
 # P2P Chat
 
-This is a naive implementation of a p2p chat app for educational purposes.
+This is a naive implementation of a secure p2p chat app for educational purposes. It uses a simplified version of the Chord protocol (without finger table) to maintain the overlay network, which is a ring.
+
+## Usage
 
 ```sh
 # Run a network with 5 peers
@@ -9,6 +11,20 @@ $ go run . -port=8001 -peer=localhost:8000
 $ go run . -port=8002 -peer=localhost:8000
 $ go run . -port=8003 -peer=localhost:8000
 $ go run . -port=8004 -peer=localhost:8000
+```
+
+To send a public chat message, just type anything and press enter.
+
+To send a private chat message, first you need to initialize it with another peer in the network by typing:
+
+```
+start_privatechat <base64 public key of peer>
+```
+
+Once done, to send a private chat message to that peer:
+
+```
+privatechat <base64 public key of peer> <message>
 ```
 
 ## Tests
@@ -30,6 +46,7 @@ $ go test ./...
 - [X] replicate chat log to new peer
 - [X] private message
 - [ ] tests
+- [ ] lots of edge cases bugs
 
 ## References:
 - [Chord: A Scalable Peer-to-peer Lookup Service for Internet
