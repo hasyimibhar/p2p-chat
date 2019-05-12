@@ -85,10 +85,7 @@ func (p *Peer) SendMessage(msg message.Message) error {
 
 	// log.Println("[trace] sending:", hex.EncodeToString(encoded))
 
-	n, err := p.conn.Write(encoded)
-	if n != len(encoded) {
-		return fmt.Errorf("failed to write %d bytes, only %d bytes written", len(encoded), n)
-	}
+	_, err = p.conn.Write(encoded)
 	if err != nil {
 		return err
 	}
@@ -111,7 +108,7 @@ func (p *Peer) handleReceive() {
 			return
 		}
 		if err != nil {
-			log.Println("[error] failed to read from peer:", err)
+			// log.Println("[error] failed to read from peer:", err)
 			return
 		}
 
@@ -121,7 +118,7 @@ func (p *Peer) handleReceive() {
 			return
 		}
 		if err != nil {
-			log.Println("[error] failed to read from peer:", err)
+			// log.Println("[error] failed to read from peer:", err)
 			return
 		}
 
