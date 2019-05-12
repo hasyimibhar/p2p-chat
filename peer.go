@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -102,9 +103,8 @@ func (p *Peer) handleReceive() {
 
 	for {
 		lenbuf := make([]byte, 4)
-		n, err := p.conn.Read(lenbuf)
-		if n != len(lenbuf) {
-			log.Printf("[error] failed to write %d bytes, only %d bytes written", len(lenbuf), n)
+		_, err := p.conn.Read(lenbuf)
+		if err == io.EOF {
 			return
 		}
 		if err != nil {
@@ -113,9 +113,8 @@ func (p *Peer) handleReceive() {
 		}
 
 		msgbuf := make([]byte, binary.BigEndian.Uint32(lenbuf))
-		n, err = p.conn.Read(msgbuf)
-		if n != len(msgbuf) {
-			log.Printf("[error] failed to write %d bytes, only %d bytes written", len(msgbuf), n)
+		_, err = p.conn.Read(msgbuf)
+		if err == io.EOF {
 			return
 		}
 		if err != nil {
