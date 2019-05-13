@@ -1,6 +1,10 @@
 # P2P Chat
 
-This is a naive implementation of a secure p2p chat app for educational purposes. It uses a simplified version of the Chord protocol (without finger table) to maintain the overlay network, which is a ring.
+This is a naive implementation of a secure p2p chat app for educational purposes. It uses a simplified version of the Chord protocol, with the following modifications:
+
+- each node has no ID, so when a node joins the network via peer P, it immediately sets P as its successor
+- no finger table, so broadcasting is done by routing around the entire overlay network (ring)
+- it's not used as DHT
 
 ## Usage
 
