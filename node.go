@@ -21,7 +21,7 @@ const (
 	SuccessorListSize = 2
 )
 
-type chatEntry struct {
+type ChatEntry struct {
 	PublicKey []byte
 	Text      string
 }
@@ -32,13 +32,15 @@ type Node struct {
 	privkey []byte
 	port    int
 
-	ln          net.Listener
-	mtx         sync.Mutex
-	successor   *Peer
-	successors  []string
-	predecessor string
-	suites      map[string]cipher.AEAD
-	chatLog     []chatEntry
+	ln           net.Listener
+	mtx          sync.Mutex
+	successor    *Peer
+	successors   []string
+	predecessor  string
+	suites       map[string]cipher.AEAD
+	chatLog      []ChatEntry
+	chatMessages chan ChatEntry
+	stabilizeCh  chan struct{}
 }
 
 // NewNode creates a new node.
@@ -49,19 +51,22 @@ func NewNode(port int) (*Node, error) {
 	}
 
 	return &Node{
-		pubkey:      pubkey,
-		privkey:     privkey,
-		port:        port,
-		successors:  make([]string, SuccessorListSize),
-		predecessor: fmt.Sprintf("localhost:%d", port), // Set predecessor to self
-		suites:      map[string]cipher.AEAD{},
-		chatLog:     []chatEntry{},
+		pubkey:       pubkey,
+		privkey:      privkey,
+		port:         port,
+		successors:   make([]string, SuccessorListSize),
+		predecessor:  fmt.Sprintf("localhost:%d", port), // Set predecessor to self
+		suites:       map[string]cipher.AEAD{},
+		chatLog:      []ChatEntry{},
+		chatMessages: make(chan ChatEntry),
+		stabilizeCh:  make(chan struct{}),
 	}, nil
 }
 
-func (n *Node) Addr() string       { return fmt.Sprintf("localhost:%d", n.port) }
-func (n *Node) PublicKey() []byte  { return n.pubkey }
-func (n *Node) PrivateKey() []byte { return n.privkey }
+func (n *Node) Addr() string                   { return fmt.Sprintf("localhost:%d", n.port) }
+func (n *Node) PublicKey() []byte              { return n.pubkey }
+func (n *Node) PrivateKey() []byte             { return n.privkey }
+func (n *Node) ChatMessages() <-chan ChatEntry { return n.chatMessages }
 
 // ListenForConnections listens for peers.
 func (n *Node) ListenForConnections() error {
@@ -94,6 +99,17 @@ func (n *Node) ListenForConnections() error {
 	}
 }
 
+// Stabilize forces the node to run the periodic stabilize routine now.
+func (n *Node) Stabilize() error {
+	n.stabilizeCh <- struct{}{}
+
+	if err := n.stabilize(); err != nil {
+		return err
+	}
+
+	return n.beginUpdateSuccessorList()
+}
+
 // Chat broadcasts a public chat message to the network.
 func (n *Node) Chat(text string) error {
 	if n.Successor() == nil {
@@ -108,7 +124,7 @@ func (n *Node) Chat(text string) error {
 	}
 
 	n.mtx.Lock()
-	n.chatLog = append(n.chatLog, chatEntry{
+	n.chatLog = append(n.chatLog, ChatEntry{
 		Text:      text,
 		PublicKey: n.pubkey,
 	})
@@ -248,14 +264,16 @@ func (n *Node) handleMessages(peer *Peer) {
 		case msg := <-peer.ReceiveMessage(message.OpcodeChat):
 			chat := msg.(message.Chat)
 
-			n.mtx.Lock()
-			n.chatLog = append(n.chatLog, chatEntry{
+			entry := ChatEntry{
 				Text:      chat.Text,
 				PublicKey: chat.PublicKey,
-			})
+			}
+
+			n.mtx.Lock()
+			n.chatLog = append(n.chatLog, entry)
 			n.mtx.Unlock()
 
-			log.Printf("[%s] %s", base64.StdEncoding.EncodeToString(chat.PublicKey), chat.Text)
+			n.chatMessages <- entry
 
 			// If the node's successor is not the sender of the chat message,
 			// propagate the chat message to the successor, effectively
@@ -277,8 +295,6 @@ func (n *Node) handleMessages(peer *Peer) {
 					PublicKey: e.PublicKey,
 					Text:      e.Text,
 				})
-
-				log.Printf("[%s] %s", base64.StdEncoding.EncodeToString(e.PublicKey), e.Text)
 			}
 
 			n.mtx.Unlock()
@@ -288,18 +304,20 @@ func (n *Node) handleMessages(peer *Peer) {
 			}
 
 		case msg := <-peer.ReceiveMessage(message.OpcodeChatLog):
-			log := msg.(message.ChatLog)
+			chatLog := msg.(message.ChatLog)
 
 			// TODO: Implement conflict resolution instead of
 			// replacing the chat log
 			n.mtx.Lock()
-			n.chatLog = []chatEntry{}
+			n.chatLog = []ChatEntry{}
 
-			for _, e := range log.Entries {
-				n.chatLog = append(n.chatLog, chatEntry{
+			for _, e := range chatLog.Entries {
+				n.chatLog = append(n.chatLog, ChatEntry{
 					PublicKey: e.PublicKey,
 					Text:      e.Text,
 				})
+
+				log.Printf("[%s] %s", base64.StdEncoding.EncodeToString(e.PublicKey), e.Text)
 			}
 
 			n.mtx.Unlock()
@@ -426,19 +444,23 @@ func (n *Node) rectify(peer *Peer, msg message.Notify) {
 }
 
 func (n *Node) handleStabilize() {
-	ticker := time.NewTicker(5 * time.Second)
-	for range ticker.C {
-		go func() {
-			if err := n.stabilize(); err != nil {
-				log.Println("[error] stabilization failed:", err)
-				return
-			}
+	for {
+		select {
+		case <-time.After(5 * time.Second):
+			go func() {
+				if err := n.stabilize(); err != nil {
+					log.Println("[error] stabilization failed:", err)
+					return
+				}
 
-			if err := n.beginUpdateSuccessorList(); err != nil {
-				log.Println("[error] populate successor list failed:", err)
-				return
-			}
-		}()
+				if err := n.beginUpdateSuccessorList(); err != nil {
+					log.Println("[error] populate successor list failed:", err)
+					return
+				}
+			}()
+
+		case <-n.stabilizeCh:
+		}
 	}
 }
 

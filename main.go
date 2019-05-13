@@ -29,8 +29,15 @@ func main() {
 	if *peer != "" {
 		if err := node.JoinPeer(*peer); err != nil {
 			log.Printf("[error] failed to join peer %s: %s", *peer, err)
+			os.Exit(1)
 		}
 	}
+
+	go func() {
+		for chat := range node.ChatMessages() {
+			log.Printf("[%s] %s", base64.StdEncoding.EncodeToString(chat.PublicKey), chat.Text)
+		}
+	}()
 
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
