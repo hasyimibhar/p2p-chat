@@ -3,6 +3,7 @@ package kademlia
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 )
 
 type NodeID uint64
@@ -12,10 +13,12 @@ type RoutingEntry struct {
 	NodeAddr string
 }
 
+// RoutingTable is a Kademlia routing table.
 type RoutingTable struct {
 	root *bucket
 }
 
+// NewRoutingTable creates a Kademlia routing table.
 func NewRoutingTable(k int, owner NodeID, max NodeID) *RoutingTable {
 	return &RoutingTable{
 		root: &bucket{
@@ -37,6 +40,7 @@ func (t *RoutingTable) Insert(entry RoutingEntry) bool {
 	return t.root.Insert(entry)
 }
 
+// Nodes returns list of nodes inside the routing table.
 func (t *RoutingTable) Nodes() []RoutingEntry {
 	return t.root.AllNodes()
 }
@@ -67,41 +71,33 @@ func (t *RoutingTable) DistantNodes(n int) []RoutingEntry {
 }
 
 // FindNode returns at most k nodes that is closest to the target node.
-func (t *RoutingTable) FindNode(target NodeID) (candidates []RoutingEntry) {
-	candidates = []RoutingEntry{}
-
-	current := t.root
-	buckets := []*bucket{t.root}
-
-	// Build a list of k-buckets increasingly closer to the target node
-	for current.WithinRange(target) && current.Left != nil || current.Right != nil {
-		if current.Left.WithinRange(target) {
-			current = current.Left
-		} else {
-			current = current.Right
-		}
-
-		buckets = append(buckets, current)
-	}
-
-	// Select at most k nodes, starting from the closest k-bucket
-	for i := len(buckets) - 1; i >= 0; i-- {
-		for _, e := range buckets[i].Entries {
-			candidates = append(candidates, e)
-
-			if len(candidates) == t.root.K {
-				return
-			}
-		}
-	}
-
-	return
+func (t *RoutingTable) FindNode(target NodeID) []RoutingEntry {
+	return t.findClosest(target, t.root.K)
 }
 
+// FindClosest returns at most n nodes that is closest to the owner node.
+func (t *RoutingTable) FindClosest(n int) []RoutingEntry {
+	return t.findClosest(t.root.Owner, n)
+}
+
+func (t *RoutingTable) findClosest(target NodeID, n int) []RoutingEntry {
+	candidates := t.root.AllNodes()
+
+	sort.Sort(ByXORDistance{candidates, target})
+
+	if len(candidates) < n {
+		return candidates
+	}
+	return candidates[:n]
+}
+
+// Contains returns true if the node id exists inside the
+// routing table.
 func (t *RoutingTable) Contains(node NodeID) bool {
 	return t.root.Contains(node)
 }
 
+// bucket is a Kademlia k-bucket.
 type bucket struct {
 	K       int
 	Low     NodeID
@@ -112,6 +108,8 @@ type bucket struct {
 	Entries []RoutingEntry
 }
 
+// AllNodes returns the list of all nodes inside the bucket
+// and its child buckets.
 func (b *bucket) AllNodes() []RoutingEntry {
 	if b.Left != nil && b.Right != nil {
 		nodes := []RoutingEntry{}
@@ -123,6 +121,8 @@ func (b *bucket) AllNodes() []RoutingEntry {
 	return b.Entries
 }
 
+// Contains returns true if the node id exists inside the bucket
+// or its child buckets.
 func (b *bucket) Contains(node NodeID) bool {
 	if b.Left != nil && b.Right != nil {
 		if b.Left.WithinRange(node) {
@@ -141,6 +141,7 @@ func (b *bucket) Contains(node NodeID) bool {
 	return false
 }
 
+// WithinRange returns wether the node id falls within the bucket range.
 func (b *bucket) WithinRange(node NodeID) bool {
 	return node >= b.Low && node <= b.High
 }
@@ -185,6 +186,7 @@ func (b *bucket) Insert(entry RoutingEntry) bool {
 	return b.Right.Insert(entry)
 }
 
+// split splits the bucket into 2 halves.
 func (b *bucket) split() {
 	if b.Left != nil || b.Right != nil {
 		panic(fmt.Errorf("bucket has already been split"))
@@ -206,4 +208,20 @@ func (b *bucket) split() {
 		Owner:   b.Owner,
 		Entries: []RoutingEntry{},
 	}
+}
+
+type RoutingEntries []RoutingEntry
+
+func (e RoutingEntries) Len() int      { return len(e) }
+func (e RoutingEntries) Swap(i, j int) { e[i], e[j] = e[j], e[i] }
+
+// ByXORDistance sorts the list of routing entries by increasing XOR distance
+// from the target node.
+type ByXORDistance struct {
+	RoutingEntries
+	Target NodeID
+}
+
+func (e ByXORDistance) Less(i, j int) bool {
+	return e.RoutingEntries[i].NodeID^e.Target < e.RoutingEntries[j].NodeID^e.Target
 }

@@ -132,6 +132,36 @@ func TestRoutingTable_FindNode(t *testing.T) {
 	}
 }
 
+func TestRoutingTable_FindClosest(t *testing.T) {
+	table := NewRoutingTable(1, 13, 15)
+
+	nodes := []struct {
+		ID NodeID
+	}{
+		{1},
+		{10},
+		{6},
+		{9},
+		{12},
+		{15},
+	}
+
+	for _, n := range nodes {
+		table.Insert(RoutingEntry{n.ID, ""})
+	}
+
+	closest := table.FindClosest(5)
+	if len(closest) != 4 {
+		t.Fatal("there should only be 4 closest nodes")
+	}
+	expected := []NodeID{12, 15, 10, 1}
+	for i, n := range expected {
+		if closest[i].NodeID != n {
+			t.Fatalf("expecting node %d, found %d instead", n, closest[i].NodeID)
+		}
+	}
+}
+
 func TestRoutingTable_Big(t *testing.T) {
 	rand.Seed(time.Now().UTC().UnixNano())
 
